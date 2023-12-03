@@ -14,6 +14,9 @@ export FLAKEY_LOGNAME="flakey-logtest.$seq"
 
 _init_flakey()
 {
+	if [ "$FSTYP" == "zfs" ]; then
+		_notrun "ZFS broken with flakey"
+	fi
 	# Scratch device
 	if [ -z "$NON_FLAKEY_DEV" ]; then
 		# Set up the device switch
