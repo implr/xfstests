@@ -1,0 +1,102 @@
+# locks up sometimes?
+generic/013
+# ENOSPC vs EDQUOT
+generic/015
+generic/300
+# TODO unknown
+generic/091
+generic/093
+generic/103
+generic/193
+generic/228
+generic/250
+generic/252
+generic/274
+generic/333
+generic/334
+generic/355
+generic/361
+generic/375
+generic/467
+generic/484
+generic/513
+generic/563
+generic/586
+generic/617
+generic/628
+generic/629
+generic/673
+generic/675
+generic/676
+generic/683
+generic/684
+generic/685
+generic/688
+# tests low space conditions (not effective with refquota), but maybe still useful later
+generic/027
+generic/256
+generic/427
+generic/449
+# devicemapper mounts
+generic/081
+generic/108
+generic/338
+generic/347
+generic/405
+generic/409
+generic/410
+generic/411
+generic/422
+generic/441
+generic/475
+generic/589
+generic/620
+# OOMs sometimes
+generic/083
+generic/650
+# extremely slow
+generic/476
+# random reflink stuff
+generic/157
+generic/172
+generic/265
+generic/266
+generic/267
+generic/268
+generic/276
+generic/278
+generic/279
+generic/281
+generic/282
+generic/283
+generic/297
+generic/329
+generic/331
+# https://github.com/openzfs/zfs/issues/16014
+generic/303
+# unknown hang
+generic/269
+# FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, dedup and other -ENOTSUPP
+generic/144
+generic/263
+generic/430
+generic/431
+generic/432
+generic/433
+generic/564
+generic/565
+generic/616
+generic/657
+generic/658
+generic/659
+generic/660
+generic/663
+generic/664
+generic/665
+generic/670
+generic/672
+# writes zeros till -ENOSPC, which zfs compresses away and takes forever
+generic/275
+generic/387
+generic/562
+generic/626

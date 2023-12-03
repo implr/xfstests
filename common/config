@@ -459,6 +459,9 @@ _mkfs_opts()
 	bcachefs)
 		export MKFS_OPTIONS=$BCACHEFS_MKFS_OPTIONS
 		;;
+	zfs)
+		export MKFS_OPTIONS="$ZFS_MKFS_OPTIONS -O xattr=sa -O acltype=posix"
+		;;
 	*)
 		;;
 	esac
@@ -546,6 +549,8 @@ _source_specific_fs()
 	ubifs)
 		[ "$UBIUPDATEVOL_PROG" = "" ] && _fatal "ubiupdatevol not found"
 		;;
+        zfs)
+                ;;
 	esac
 }
 
@@ -622,6 +627,13 @@ _check_device()
 	ubifs)
 		if [ ! -c "$dev" ]; then
 			_fatal "common/config: $name ($dev) is not a character device"
+		fi
+		;;
+	zfs)
+                # ZTODO
+		/sbin/zfs list -H $TEST_DEV > /dev/null 2>&1
+		if [ "$?" != "0" ]; then
+			_fatal "common/config: $name is not a ZFS pool"
 		fi
 		;;
 	ceph-fuse)
@@ -894,6 +906,12 @@ get_next_config() {
 	if [ "$OVERLAY" == "true" -o "$FSTYP" == "overlay" ]; then
 		_overlay_config_override
 	fi
+
+        if [ "$FSTYP" == "zfs" ]; then
+            if [ ! -z "$SCRATCH_DEV" ] && [ -z "$SCRATCH_ZPOOL_NAME" ]; then
+                _fatal "ZFS requires SCRATCH_ZPOOL_NAME to be set if SCRATCH_DEV is set"
+            fi
+        fi
 }
 
 if [ -z "$CONFIG_INCLUDED" ]; then

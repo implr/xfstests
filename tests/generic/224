@@ -27,6 +27,10 @@ _cleanup()
 # real QA test starts here
 _supported_fs generic
 
+if [ "$FSTYP" = "zfs" ]; then
+    _notrun "skipped for filesystem type: $FSTYP"
+fi
+
 _require_scratch
 
 # make a 1GB filesystem

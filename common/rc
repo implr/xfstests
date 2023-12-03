@@ -225,9 +225,13 @@ _common_dev_mount_options()
 _scratch_mount_options()
 {
 	_scratch_options mount
-
-	echo `_common_dev_mount_options $*` $SCRATCH_OPTIONS \
-					$SCRATCH_DEV $SCRATCH_MNT
+	if [ "$FSTYP" == "zfs" ]; then
+            echo `_common_dev_mount_options $*` $SCRATCH_OPTIONS \
+                $SCRATCH_ZPOOL_NAME $SCRATCH_MNT
+        else
+            echo `_common_dev_mount_options $*` $SCRATCH_OPTIONS \
+                $SCRATCH_DEV $SCRATCH_MNT
+	fi
 }
 
 _supports_filetype()
@@ -267,7 +271,11 @@ _try_scratch_mount()
 	_mount -t $FSTYP$FUSE_SUBTYP `_scratch_mount_options $*`
 	mount_ret=$?
 	[ $mount_ret -ne 0 ] && return $mount_ret
-	_idmapped_mount $SCRATCH_DEV $SCRATCH_MNT
+	if [ "$FSTYP" == "zfs" ]; then
+            _idmapped_mount $SCRATCH_ZPOOL_NAME $SCRATCH_MNT
+        else
+            _idmapped_mount $SCRATCH_DEV $SCRATCH_MNT
+        fi
 }
 
 # mount scratch device with given options and _fail if mount fails
@@ -312,7 +320,7 @@ _scratch_unmount()
 	overlay)
 		_overlay_scratch_unmount
 		;;
-	btrfs)
+	btrfs | zfs)
 		$UMOUNT_PROG $SCRATCH_MNT
 		;;
 	*)
@@ -611,6 +619,9 @@ _test_mkfs()
     xfs)
 	$MKFS_PROG -t $FSTYP -- -f $MKFS_OPTIONS $* $TEST_DEV
 	;;
+    zfs)
+        /sbin/zfs create -o mountpoint=legacy $* $TEST_DEV
+        ;;
     *)
 	yes | $MKFS_PROG -t $FSTYP -- $MKFS_OPTIONS $* $TEST_DEV
 	;;
@@ -653,6 +664,9 @@ _try_mkfs_dev()
     xfs)
 	$MKFS_PROG -t $FSTYP -- -f $MKFS_OPTIONS $*
 	;;
+    zfs)
+        /sbin/zpool create -f -O mountpoint=legacy $MKFS_OPTIONS $SCRATCH_ZPOOL_NAME $*
+        ;;
     *)
 	yes | $MKFS_PROG -t $FSTYP -- $MKFS_OPTIONS $*
 	;;
@@ -753,6 +767,16 @@ _scratch_mkfs()
 		mkfs_cmd="yes | $MKFS_PROG -t $FSTYP --"
 		mkfs_filter="grep -v -e ^mkfs\.ocfs2"
 		;;
+	zfs)
+                if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
+                    _fail "SCRATCH_ZPOOL_NAME unset"
+                fi
+		if /sbin/zpool list -H $SCRATCH_ZPOOL_NAME > /dev/null 2>&1; then
+			/sbin/zpool destroy -f $SCRATCH_ZPOOL_NAME
+		fi
+                /sbin/zpool create -f -O mountpoint=legacy $* $MKFS_OPTIONS $SCRATCH_ZPOOL_NAME $SCRATCH_DEV
+                return $?
+		;;	
 	*)
 		mkfs_cmd="yes | $MKFS_PROG -t $FSTYP --"
 		mkfs_filter="cat"
@@ -882,6 +906,12 @@ _scratch_pool_mkfs()
     case $FSTYP in
     btrfs)
         $MKFS_BTRFS_PROG $MKFS_OPTIONS $* $SCRATCH_DEV_POOL > /dev/null
+        ;;
+    zfs)
+        if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
+            _fail "SCRATCH_ZPOOL_NAME unset"
+        fi
+        /sbin/zpool create -f -O mountpoint=legacy $* $MKFS_OPTIONS $SCRATCH_ZPOOL_NAME $SCRATCH_DEV_POOL
         ;;
     *)
         echo "_scratch_pool_mkfs is not implemented for $FSTYP" 1>&2
@@ -1046,6 +1076,15 @@ _scratch_mkfs_sized()
 	bcachefs)
 		$MKFS_PROG -t $FSTYP -- $MKFS_OPTIONS --fs_size=$fssize --block_size=$blocksize $SCRATCH_DEV
 		;;
+	zfs)
+                if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
+                    _fail "SCRATCH_ZPOOL_NAME unset"
+                fi
+		if /sbin/zpool list -H $SCRATCH_ZPOOL_NAME > /dev/null 2>&1; then
+			/sbin/zpool destroy -f $SCRATCH_ZPOOL_NAME
+		fi
+                /sbin/zpool create -f -O mountpoint=legacy -O refquota=$fssize $MKFS_OPTIONS $SCRATCH_ZPOOL_NAME $SCRATCH_DEV
+		;;
 	*)
 		_notrun "Filesystem $FSTYP not supported in _scratch_mkfs_sized"
 		;;
@@ -1192,6 +1231,10 @@ _repair_scratch_fs()
     bcachefs)
 	# With bcachefs, if fsck detects any errors we consider it a bug and we
 	# want the test to fail:
+	_check_scratch_fs
+	;;
+    zfs)
+	# ZFS has no offline repair; just check
 	_check_scratch_fs
 	;;
     *)
@@ -1743,6 +1786,20 @@ _require_scratch_nocheck()
 			_notrun "this test requires a valid \$SCRATCH_MNT"
 		fi
 		;;
+	zfs)
+                if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
+                    _notrun "SCRATCH_ZPOOL_NAME unset"
+                fi
+		if [ -z "$SCRATCH_DEV" -o "`_is_block_dev "$SCRATCH_DEV"`" = "" ]
+		then
+		    _notrun "this test requires a valid \$SCRATCH_DEV"
+		fi
+		## SCRATCH_DEV must be of the form 'pool/dataset'
+		#/sbin/zfs list -H $SCRATCH_DEV > /dev/null 2>&1
+		#if [ "$?" != "0" ]; then
+		#     _notrun "this test requires a valid \$SCRATCH_DEV"
+		#fi
+		;;
 	*)
 		 if [ -z "$SCRATCH_DEV" -o "`_is_block_dev "$SCRATCH_DEV"`" = "" ]
 		 then
@@ -1790,6 +1847,9 @@ _require_no_compress()
 	case "$FSTYP" in
 	btrfs)
 		_require_btrfs_no_compress
+		;;
+	zfs)
+		_require_zfs_no_compress
 		;;
 	*)
 		;;
@@ -1951,6 +2011,17 @@ _require_test()
 		fi
 		if [ ! -d "$TEST_DIR" ]; then
 			_notrun "this test requires a valid \$TEST_DIR"
+		fi
+		;;
+        zfs)
+		# TEST_DEV must be of the form 'pool/dataset'
+		/sbin/zfs list -H $TEST_DEV > /dev/null 2>&1
+		if [ "$?" != "0" ]; then
+		     _notrun "this test requires a valid \$TEST_DEV"
+		fi
+		if [ ! -d "$TEST_DIR" ]
+		then
+		     _notrun "this test requires a valid \$TEST_DIR"
 		fi
 		;;
 	*)
@@ -3294,6 +3365,9 @@ _check_test_fs()
     ubifs)
 	# there is no fsck program for ubifs yet
 	;;
+    zfs)
+	# all zfs checking is done online
+	;;
     *)
 	_check_generic_filesystem $TEST_DEV
 	;;
@@ -3357,6 +3431,9 @@ _check_scratch_fs()
 	;;
     ubifs)
 	# there is no fsck program for ubifs yet
+	;;
+    zfs)
+	# all zfs checking is done online
 	;;
     *)
 	_check_generic_filesystem $device
@@ -3593,7 +3670,7 @@ _require_scratch_dev_pool()
 	# btrfs test case needs ndevs or more scratch_dev_pool; other FS not sure
 	# so fail it
 	case $FSTYP in
-	btrfs)
+	btrfs | zfs)
 		if [ "`echo $SCRATCH_DEV_POOL|wc -w`" -lt $ndevs ]; then
 			_notrun "btrfs and this test needs $ndevs or more disks in SCRATCH_DEV_POOL"
 		fi
@@ -3617,10 +3694,13 @@ _require_scratch_dev_pool()
 		        fi
 		fi
 		# To help better debug when something fails, we remove
-		# traces of previous btrfs FS on the dev. For zoned devices we
+		# traces of previous FS on the dev. For zoned devices we
 		# can't use dd as it'll lead to unaligned writes so simply
 		# reset the first two zones.
 		if [ "`_zone_type "$i"`" = "none" ]; then
+                        if [ -x /sbin/zpool ]; then
+                            /sbin/zpool labelclear -f $i
+                        fi
 			dd if=/dev/zero of=$i bs=4096 count=100 > /dev/null 2>&1
 		else
 			$BLKZONE_PROG reset -c 2 $i

@@ -64,7 +64,11 @@ $UDEV_SETTLE_PROG >>$seqres.full 2>&1
 # above vgcreate/lvcreate operations
 _mkfs_dev /dev/mapper/$vgname-$lvname
 
-_mount /dev/mapper/$vgname-$lvname $SCRATCH_MNT
+if [ "$FSTYP" == "zfs" ]; then
+    _mount $SCRATCH_ZPOOL_NAME $SCRATCH_MNT
+else
+    _mount /dev/mapper/$vgname-$lvname $SCRATCH_MNT
+fi
 
 # create a test file with contiguous blocks which will span across the 2 disks
 $XFS_IO_PROG -f -c "pwrite 0 16M" -c fsync $SCRATCH_MNT/testfile >>$seqres.full

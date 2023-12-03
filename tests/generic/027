@@ -46,8 +46,8 @@ echo "Remove reserved file" >>$seqres.full
 rm -f $SCRATCH_MNT/testfile
 
 loop=100
-# btrfs takes much longer time, reduce the loop count
-if [ "$FSTYP" == "btrfs" ]; then
+# btrfs and zfs take much longer time, reduce the loop count
+if [ "$FSTYP" == "btrfs" -o "$FSTYP" == "zfs" ]; then
 	loop=10
 fi
 

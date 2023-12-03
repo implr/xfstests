@@ -10,6 +10,10 @@ FLAKEY_ERROR_WRITES=2
 
 _init_flakey()
 {
+        if [ "$FSTYP" == "zfs" ]; then
+            _notrun "ZFS broken with flakey"
+            zpool export -f "$SCRATCH_ZPOOL_NAME"
+        fi
 	# Scratch device
 	local BLK_DEV_SIZE=`blockdev --getsz $SCRATCH_DEV`
 	FLAKEY_DEV=/dev/mapper/flakey-test
@@ -17,7 +21,7 @@ _init_flakey()
 	FLAKEY_TABLE_DROP="0 $BLK_DEV_SIZE flakey $SCRATCH_DEV 0 0 180 1 drop_writes"
 	FLAKEY_TABLE_ERROR="0 $BLK_DEV_SIZE flakey $SCRATCH_DEV 0 0 180 1 error_writes"
 	_dmsetup_create flakey-test --table "$FLAKEY_TABLE" || \
-		_fatal "failed to create flakey device"
+		_fatal "failed to create flakey device $FLAKEY_TABLE"
 
 	# Realtime device
 	if [ -n "$SCRATCH_RTDEV" ]; then
@@ -62,7 +66,12 @@ _mount_flakey()
 {
 	_scratch_options mount
 
-	mount -t $FSTYP $SCRATCH_OPTIONS $MOUNT_OPTIONS $FLAKEY_DEV $SCRATCH_MNT
+        if [ "$FSTYP" == "zfs" ]; then
+            zpool import "$SCRATCH_ZPOOL_NAME" -d $FLAKEY_DEV
+            mount -t $FSTYP $SCRATCH_OPTIONS $MOUNT_OPTIONS $SCRATCH_ZPOOL_NAME $SCRATCH_MNT
+        else
+            mount -t $FSTYP $SCRATCH_OPTIONS $MOUNT_OPTIONS $FLAKEY_DEV $SCRATCH_MNT
+        fi
 }
 
 _unmount_flakey()
