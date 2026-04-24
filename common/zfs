@@ -1,0 +1,102 @@
+##/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+#
+# Common ZFS-specific helpers, sourced from common/config when FSTYP=zfs.
+
+# TODO: these should be driven by $MKFS_ZFS_PROG / $ZPOOL_PROG / $ZFS_UTIL_PROG
+# exported from common/config. For now we call the binaries by absolute path
+# to match the behaviour of the original out-of-tree ZFS support patches.
+ZPOOL_PROG=/sbin/zpool
+ZFS_PROG=/sbin/zfs
+
+_zfs_require_scratch_zpool_name()
+{
+	if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
+		_fail "SCRATCH_ZPOOL_NAME unset"
+	fi
+}
+
+# Destroy the scratch zpool if it exists, so _scratch_mkfs paths can recreate it.
+_zfs_destroy_scratch_pool()
+{
+	_zfs_require_scratch_zpool_name
+	if $ZPOOL_PROG list -H $SCRATCH_ZPOOL_NAME > /dev/null 2>&1; then
+		$ZPOOL_PROG destroy -f $SCRATCH_ZPOOL_NAME
+	fi
+}
+
+# Create a fresh scratch zpool/dataset on $SCRATCH_DEV.
+_zfs_scratch_mkfs()
+{
+	_zfs_destroy_scratch_pool
+	$ZPOOL_PROG create -f -O mountpoint=legacy $* $MKFS_OPTIONS \
+		$SCRATCH_ZPOOL_NAME $SCRATCH_DEV
+}
+
+# Create a scratch zpool spanning $SCRATCH_DEV_POOL.
+_zfs_scratch_pool_mkfs()
+{
+	_zfs_require_scratch_zpool_name
+	$ZPOOL_PROG create -f -O mountpoint=legacy $* $MKFS_OPTIONS \
+		$SCRATCH_ZPOOL_NAME $SCRATCH_DEV_POOL
+}
+
+# Create a scratch zpool of approximately the given size using refquota.
+_zfs_scratch_mkfs_sized()
+{
+	local fssize=$1
+	shift
+	_zfs_destroy_scratch_pool
+	$ZPOOL_PROG create -f -O mountpoint=legacy -O refquota=$fssize \
+		$MKFS_OPTIONS $* $SCRATCH_ZPOOL_NAME $SCRATCH_DEV
+}
+
+# Create a dataset on $TEST_DEV (which must already be a pool/parent-dataset).
+_zfs_test_mkfs()
+{
+	$ZFS_PROG create -o mountpoint=legacy $* $TEST_DEV
+}
+
+# Variant of _zfs_test_mkfs used by _try_mkfs_dev where the device name is
+# explicitly passed in by the caller.
+_zfs_try_mkfs_dev()
+{
+	$ZPOOL_PROG create -f -O mountpoint=legacy $MKFS_OPTIONS $* \
+		$SCRATCH_ZPOOL_NAME
+}
+
+# Emit the mount-source argument used by _scratch_mount_options. For ZFS the
+# kernel mounts off the zpool dataset name, not the block device.
+_zfs_scratch_mount_source()
+{
+	echo "$SCRATCH_ZPOOL_NAME"
+}
+
+_require_zfs_scratch_dev()
+{
+	if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
+		_notrun "SCRATCH_ZPOOL_NAME unset"
+	fi
+	if [ -z "$SCRATCH_DEV" -o "`_is_block_dev "$SCRATCH_DEV"`" = "" ]; then
+		_notrun "this test requires a valid \$SCRATCH_DEV"
+	fi
+}
+
+_require_zfs_test_dev()
+{
+	# TEST_DEV must be of the form 'pool/dataset'
+	if ! $ZFS_PROG list -H $TEST_DEV > /dev/null 2>&1; then
+		_notrun "this test requires a valid \$TEST_DEV"
+	fi
+	if [ ! -d "$TEST_DIR" ]; then
+		_notrun "this test requires a valid \$TEST_DIR"
+	fi
+}
+
+# Tests that want an uncompressed filesystem can _require_no_compress; ZFS
+# enables compression by default but we do not yet support disabling it at
+# test time, so always skip.
+_require_zfs_no_compress()
+{
+	_notrun "ZFS compression cannot be disabled for these tests"
+}

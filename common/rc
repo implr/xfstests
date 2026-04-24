@@ -392,13 +392,13 @@ _common_dev_mount_options()
 _scratch_mount_options()
 {
 	_scratch_options mount
+
+	local mount_source="$SCRATCH_DEV"
 	if [ "$FSTYP" == "zfs" ]; then
-            echo `_common_dev_mount_options $*` $SCRATCH_OPTIONS \
-                $SCRATCH_ZPOOL_NAME $SCRATCH_MNT
-        else
-            echo `_common_dev_mount_options $*` $SCRATCH_OPTIONS \
-                $SCRATCH_DEV $SCRATCH_MNT
+		mount_source=$(_zfs_scratch_mount_source)
 	fi
+	echo `_common_dev_mount_options $*` $SCRATCH_OPTIONS \
+					$mount_source $SCRATCH_MNT
 }
 
 _supports_filetype()
@@ -438,11 +438,11 @@ _try_scratch_mount()
 	_mount -t $FSTYP$FUSE_SUBTYP `_scratch_mount_options $*`
 	mount_ret=$?
 	[ $mount_ret -ne 0 ] && return $mount_ret
+	local idmap_source="$SCRATCH_DEV"
 	if [ "$FSTYP" == "zfs" ]; then
-		_idmapped_mount $SCRATCH_ZPOOL_NAME $SCRATCH_MNT
-	else
-		_idmapped_mount $SCRATCH_DEV $SCRATCH_MNT
+		idmap_source=$(_zfs_scratch_mount_source)
 	fi
+	_idmapped_mount $idmap_source $SCRATCH_MNT
 	_prepare_for_eio_shutdown $SCRATCH_DEV
 	return 0
 }
@@ -895,7 +895,7 @@ _test_mkfs()
 	$MKFS_BCACHEFS_PROG $MKFS_OPTIONS $* $TEST_DEV > /dev/null
 	;;
     zfs)
-	/sbin/zfs create -o mountpoint=legacy $* $TEST_DEV
+	_zfs_test_mkfs $*
 	;;
     *)
 	yes | $MKFS_PROG -t $FSTYP -- $MKFS_OPTIONS $* $TEST_DEV
@@ -943,8 +943,8 @@ _try_mkfs_dev()
 	$MKFS_PROG -t $FSTYP -- -f $MKFS_OPTIONS $*
 	;;
     zfs)
-        /sbin/zpool create -f -O mountpoint=legacy $MKFS_OPTIONS $SCRATCH_ZPOOL_NAME $*
-        ;;
+	_zfs_try_mkfs_dev $*
+	;;
     *)
 	yes | $MKFS_PROG -t $FSTYP -- $MKFS_OPTIONS $*
 	;;
@@ -1053,13 +1053,7 @@ _scratch_mkfs()
 		mkfs_filter="cat"
 		;;
 	zfs)
-		if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
-			_fail "SCRATCH_ZPOOL_NAME unset"
-		fi
-		if /sbin/zpool list -H $SCRATCH_ZPOOL_NAME > /dev/null 2>&1; then
-			/sbin/zpool destroy -f $SCRATCH_ZPOOL_NAME
-		fi
-		/sbin/zpool create -f -O mountpoint=legacy $* $MKFS_OPTIONS $SCRATCH_ZPOOL_NAME $SCRATCH_DEV
+		_zfs_scratch_mkfs $*
 		return $?
 		;;
 	*)
@@ -1203,11 +1197,8 @@ _scratch_pool_mkfs()
         $MKFS_BTRFS_PROG $MKFS_OPTIONS $* $SCRATCH_DEV_POOL > /dev/null
         ;;
     zfs)
-        if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
-            _fail "SCRATCH_ZPOOL_NAME unset"
-        fi
-        /sbin/zpool create -f -O mountpoint=legacy $* $MKFS_OPTIONS $SCRATCH_ZPOOL_NAME $SCRATCH_DEV_POOL
-        ;;
+	_zfs_scratch_pool_mkfs $*
+	;;
     *)
         echo "_scratch_pool_mkfs is not implemented for $FSTYP" 1>&2
         ;;
@@ -1425,13 +1416,7 @@ _try_scratch_mkfs_sized()
 		$MKFS_BCACHEFS_PROG $MKFS_OPTIONS --fs_size=$fssize $blocksize_opt "$@" $SCRATCH_DEV
 		;;
 	zfs)
-                if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
-                    _fail "SCRATCH_ZPOOL_NAME unset"
-                fi
-		if /sbin/zpool list -H $SCRATCH_ZPOOL_NAME > /dev/null 2>&1; then
-			/sbin/zpool destroy -f $SCRATCH_ZPOOL_NAME
-		fi
-                /sbin/zpool create -f -O mountpoint=legacy -O refquota=$fssize $MKFS_OPTIONS $SCRATCH_ZPOOL_NAME $SCRATCH_DEV
+		_zfs_scratch_mkfs_sized $fssize "$@"
 		;;
 	*)
 		_notrun "Filesystem $FSTYP not supported in _scratch_mkfs_sized"
@@ -2118,18 +2103,7 @@ _require_scratch_nocheck()
 		fi
 		;;
 	zfs)
-                if [ -z "$SCRATCH_ZPOOL_NAME" ]; then
-                    _notrun "SCRATCH_ZPOOL_NAME unset"
-                fi
-		if [ -z "$SCRATCH_DEV" -o "`_is_block_dev "$SCRATCH_DEV"`" = "" ]
-		then
-		    _notrun "this test requires a valid \$SCRATCH_DEV"
-		fi
-		## SCRATCH_DEV must be of the form 'pool/dataset'
-		#/sbin/zfs list -H $SCRATCH_DEV > /dev/null 2>&1
-		#if [ "$?" != "0" ]; then
-		#     _notrun "this test requires a valid \$SCRATCH_DEV"
-		#fi
+		_require_zfs_scratch_dev
 		;;
 	*)
 		 if [ -z "$SCRATCH_DEV" -o "`_is_block_dev "$SCRATCH_DEV"`" = "" ]
@@ -2358,16 +2332,8 @@ _require_test()
 			_notrun "this test requires a valid \$TEST_DIR"
 		fi
 		;;
-        zfs)
-		# TEST_DEV must be of the form 'pool/dataset'
-		/sbin/zfs list -H $TEST_DEV > /dev/null 2>&1
-		if [ "$?" != "0" ]; then
-		     _notrun "this test requires a valid \$TEST_DEV"
-		fi
-		if [ ! -d "$TEST_DIR" ]
-		then
-		     _notrun "this test requires a valid \$TEST_DIR"
-		fi
+	zfs)
+		_require_zfs_test_dev
 		;;
 	*)
 		 if [ -z "$TEST_DEV" ] || [ "`_is_block_dev "$TEST_DEV"`" = "" ]
@@ -4092,7 +4058,7 @@ _require_scratch_dev_pool()
 	case $FSTYP in
 	btrfs | zfs)
 		if [ "`echo $SCRATCH_DEV_POOL|wc -w`" -lt $ndevs ]; then
-			_notrun "btrfs and this test needs $ndevs or more disks in SCRATCH_DEV_POOL"
+			_notrun "this test needs $ndevs or more disks in SCRATCH_DEV_POOL"
 		fi
 	;;
 	*)
@@ -4118,9 +4084,9 @@ _require_scratch_dev_pool()
 		# can't use dd as it'll lead to unaligned writes so simply
 		# reset the first two zones.
 		if [ "`_zone_type "$i"`" = "none" ]; then
-                        if [ -x /sbin/zpool ]; then
-                            /sbin/zpool labelclear -f $i
-                        fi
+			if [ -x /sbin/zpool ]; then
+				/sbin/zpool labelclear -f $i
+			fi
 			dd if=/dev/zero of=$i bs=4096 count=100 > /dev/null 2>&1
 		else
 			$BLKZONE_PROG reset -c 2 $i

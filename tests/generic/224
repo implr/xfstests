@@ -24,10 +24,7 @@ _cleanup()
 # Import common functions.
 . ./common/filter
 
-
-if [ "$FSTYP" = "zfs" ]; then
-    _notrun "skipped for filesystem type: $FSTYP"
-fi
+_exclude_fs zfs
 
 _require_scratch
 

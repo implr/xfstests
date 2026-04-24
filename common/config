@@ -556,8 +556,9 @@ _source_specific_fs()
 		[ "$UBIUPDATEVOL_PROG" = "" ] && _fatal "ubiupdatevol not found"
 		. ./common/ubifs
 		;;
-        zfs)
-                ;;
+	zfs)
+		. ./common/zfs
+		;;
 	esac
 }
 
@@ -637,9 +638,7 @@ _check_device()
 		fi
 		;;
 	zfs)
-                # ZTODO
-		/sbin/zfs list -H $TEST_DEV > /dev/null 2>&1
-		if [ "$?" != "0" ]; then
+		if ! /sbin/zfs list -H $TEST_DEV > /dev/null 2>&1; then
 			_fatal "common/config: $name is not a ZFS pool"
 		fi
 		;;
@@ -914,11 +913,11 @@ get_next_config() {
 		_overlay_config_override
 	fi
 
-        if [ "$FSTYP" == "zfs" ]; then
-            if [ ! -z "$SCRATCH_DEV" ] && [ -z "$SCRATCH_ZPOOL_NAME" ]; then
-                _fatal "ZFS requires SCRATCH_ZPOOL_NAME to be set if SCRATCH_DEV is set"
-            fi
-        fi
+	if [ "$FSTYP" == "zfs" ]; then
+		if [ -n "$SCRATCH_DEV" ] && [ -z "$SCRATCH_ZPOOL_NAME" ]; then
+			_fatal "ZFS requires SCRATCH_ZPOOL_NAME to be set if SCRATCH_DEV is set"
+		fi
+	fi
 }
 
 if [ -z "$CONFIG_INCLUDED" ]; then
