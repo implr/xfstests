@@ -1,5 +1,25 @@
-# locks up sometimes?
+# Heavy fsstress / heavy-write soaks. Two failure modes seen on this kernel
+# + ZFS 2.4.1, both unrecoverable without reboot:
+#   1. Rangelock livelock (013): fsstress writers hold per-vnode rangelocks
+#      while zil_commit, called from the same writer's fsync/sync_fs path,
+#      blocks in zfs_get_data -> zfs_rangelock_enter waiting on that same
+#      writer's rangelock. Threads pile up in D state (cv_wait_common ->
+#      zfs_rangelock_enter_impl -> zfs_get_data -> zil_lwb_write_issue ->
+#      zil_commit_impl -> zfs_sync); even cleanup rm -rf wedges in
+#      vfs_unlink. SIGKILL leaves rangelocks pinned.
+#   2. ARC OOM-kernel-panic (083/269/476/650): the in-flight write
+#      backlog plus dirty data outpaces the ARC reclaim path on a 4 GiB
+#      scratch pool; the kernel OOM-kills its way through the whole VM
+#      before ZFS releases dirty buffers. Confirmed: running 083+269+476+650
+#      together kernel-panicked the VM.
+# All five tests fall in the same ZFS write-stress family. Defer until ZFS
+# tunables (zfs_dirty_data_max, ARC limits) are configured for this VM size,
+# or until openzfs fixes the rangelock/ZIL contention.
 generic/013
+generic/083
+generic/269
+generic/476
+generic/650
 
 # ZFS doesn't track setuid/setgid/fscaps the way other filesystems do —
 # clears too aggressively in some cases, not at all in others. Same class as
@@ -101,13 +121,6 @@ generic/620
 # zpool-on-loop isn't supported by our helpers; structural.
 generic/361
 
-# OOMs sometimes
-generic/083
-generic/650
-
-# extremely slow
-generic/476
-
 # fsx soaks that trip ZFS' DIO/buffered/io_uring CoW races. 091 fails fsx
 # READ BAD DATA only when recordsize < 128K (we run with 64K). 263 is the
 # DIO+sub-block-buffered fsx variant. 616/617 are the io_uring buffered/DIO
@@ -117,11 +130,10 @@ generic/263
 generic/616
 generic/617
 
-# https://github.com/openzfs/zfs/issues/16014
+# https://github.com/openzfs/zfs/issues/16014 — high-offset reflink: cp
+# --reflink=always on a sparse file gets SIGKILL'd, test output truncates
+# after "Reflink large empty file". Confirmed still failing 2026-04-25.
 generic/303
-
-# unknown hang
-generic/269
 
 # Sub-recordsize reflink/copy_range issues:
 #   144 - reflinks blksz*4+37 bytes; ZFS rejects the sub-recordsize tail with
