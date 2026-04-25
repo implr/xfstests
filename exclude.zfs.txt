@@ -1,45 +1,72 @@
 # locks up sometimes?
 generic/013
-# ENOSPC vs EDQUOT
-generic/015
-generic/300
-# TODO unknown
-generic/091
+
+# ZFS doesn't track setuid/setgid/fscaps the way other filesystems do —
+# clears too aggressively in some cases, not at all in others. Same class as
+# the POSIX-ACL quirks below; candidate for openzfs upstream reports.
+#   093 - append doesn't clear fscaps
+#   193 - chown(2) clears sgid bit even when group-exec was not set
+#   355 - direct write doesn't clear suid/sgid
+#   375 - chmod doesn't clear SGID in some cases
+#   513 - reflink doesn't clear fscaps
+#   673 - reflink doesn't clear suid/sgid
+#   675 - reflink doesn't clear fscaps
+#   683 - fallocate doesn't clear suid/sgid
+#   684 - fpunch doesn't clear suid/sgid
+#   685 - fzero doesn't clear suid/sgid
+#   688 - fallocate doesn't clear fscaps
+# (683/684/685/688 were auto-notrun before recordsize=64K via alloc-unit check.)
 generic/093
-generic/103
 generic/193
-generic/228
-generic/250
-generic/252
-generic/274
-generic/333
-generic/334
 generic/355
-generic/361
 generic/375
-generic/467
-generic/484
 generic/513
-generic/563
-generic/586
-generic/617
-generic/628
-generic/629
 generic/673
 generic/675
-generic/676
 generic/683
 generic/684
 generic/685
 generic/688
-# tests low space conditions (not effective with refquota), but maybe still useful later
-generic/027
-generic/256
-generic/427
+
+# ZFS POSIX-ACL (acltype=posix) quirks:
+#   319 - parent default ACL's o:: perms not intersected with requested mode;
+#         child gets other::r-x where expected other::---
+#   444 - parent dir's SGID bit not inherited by child mkdir when default ACL
+#         is present
+#   449 - acl+attr ENOSPC test: file mode bits change to "-rwxr-----" when
+#         setfacl partially applies; xattr-stored ACL on ZFS leaks group bits
+generic/319
+generic/444
 generic/449
-# devicemapper mounts
+
+# ZFS fallocate is a no-op: returns success but doesn't reserve blocks.
+# Tests that depend on real prealloc semantics therefore fail.
+#   103 - allocates blocks on nearly-full fs, expects success
+#   228 - tests prealloc hitting RLIMIT_FSIZE
+#   256 - dir prealloc (mkfs_sized + fallocate on dir)
+#   274 - write into preallocated region on nearly-full fs
+#   586 - expects extsize-style prealloc past write end
+generic/103
+generic/228
+generic/256
+generic/274
+generic/586
+
+# Tight-pool ENOSPC vs near-full slack: with a sized-loop-backed pool, ZFS
+# pool overhead leaves so little headroom that even open()/touch can hit
+# ENOSPC where the test expects a partial-write-then-ENOSPC. Refquota used
+# to leave more slack and these passed; the ENOSPC is now correct but the
+# tests' expectations don't match ZFS's pool-level accounting.
+generic/275
+generic/387
+generic/511
+
+# Tests that stack dm-linear/dm-error on top of the scratch device. Doesn't
+# work when the scratch device is owned by an imported zpool.
 generic/081
 generic/108
+generic/250
+generic/252
 generic/338
 generic/347
 generic/405
@@ -49,14 +76,28 @@ generic/411
 generic/422
 generic/441
 generic/475
+generic/484
 generic/589
 generic/620
+
+# Test creates a FS image inside SCRATCH_MNT, creates a loop device for it,
+# then calls _mkfs_dev on the loop dev — which for us becomes `zpool create
+# /dev/loopN` and fails ("invalid character '/' in pool name"). Nested-
+# zpool-on-loop isn't supported by our helpers; structural.
+generic/361
+
 # OOMs sometimes
 generic/083
 generic/650
+
 # extremely slow
 generic/476
-# random reflink stuff
+
+# Random reflink / fsx DIO stuff. 617 is io_uring DIO fsx soak; hits READ
+# BAD DATA similar to 363. 091 fails fsx READ BAD DATA only when recordsize
+# < 128K (we run with 64K to enable the alloc-unit notrun bucket). Needs
+# deeper investigation.
+generic/091
 generic/157
 generic/172
 generic/265
@@ -72,10 +113,14 @@ generic/283
 generic/297
 generic/329
 generic/331
+generic/617
+
 # https://github.com/openzfs/zfs/issues/16014
 generic/303
+
 # unknown hang
 generic/269
+
 # FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, dedup and other -ENOTSUPP
 generic/144
 generic/263
@@ -95,8 +140,27 @@ generic/664
 generic/665
 generic/670
 generic/672
-# writes zeros till -ENOSPC, which zfs compresses away and takes forever
-generic/275
-generic/387
-generic/562
-generic/626
+
+# fsx -e 1 post-EOF-page pollution: tests a zeroing behavior that's
+# fs-specific (opt-in per commit 9e2b0f4c). Also fails on tmpfs, not a
+# ZFS correctness issue.
+generic/363
+
+# ZFS doesn't implement cgroup-aware writeback accounting (same as most
+# non-btrfs/non-xfs filesystems).
+generic/563
+
+# open_by_handle on a kept-open-but-unlinked file: ZFS returns ESTALE (116)
+# after drop_caches, where ext4/xfs/btrfs return success. ZFS keeps unlinked-
+# but-referenced inodes on its on-disk unlinked set, but fh_to_dentry doesn't
+# resolve through that set after the inode is evicted from cache. Real ZFS
+# bug, candidate for openzfs upstream report.
+generic/467
+
+# t_readdir_3 random-offset seek + getdents64 returns 0 (EOF) on ZFS. ZFS
+# readdir d_off values are ZAP hash cookies, not a dense monotonic space —
+# a random offset in [0, maxpos] often lands between hash buckets where no
+# entry exists. Test was written for the udf seekdir crash (a48fc69fe658)
+# and assumes random offsets always yield an entry; that assumption is
+# fs-specific and incompatible with hash-cookie directories like ZFS.
+generic/676

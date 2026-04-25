@@ -1018,6 +1018,10 @@ _fill_fs()
 	testio=`$XFS_IO_PROG -F -fc "falloc 0 $block_size" $dir/$$.xfs_io 2>&1`
 	echo $testio | grep -q "not found" && use_falloc=0
 	echo $testio | grep -q "Operation not supported" && use_falloc=0
+	# ZFS reports falloc success but doesn't actually reserve blocks, so
+	# using it to fill the fs is a no-op. Fall back to pwrite of pseudo-
+	# random data (which won't compress either).
+	[ "$FSTYP" = "zfs" ] && use_falloc=0
 
 	if [ $file_size -lt $block_size ]; then
 		file_size=$block_size

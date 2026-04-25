@@ -17,38 +17,67 @@ _zfs_require_scratch_zpool_name()
 }
 
 # Destroy the scratch zpool if it exists, so _scratch_mkfs paths can recreate it.
+# Also detaches any loop devices stacked on $SCRATCH_DEV — _zfs_scratch_mkfs_sized
+# uses one to fake a smaller pool, and a crashed prior run could leave one behind.
 _zfs_destroy_scratch_pool()
 {
 	_zfs_require_scratch_zpool_name
 	if $ZPOOL_PROG list -H $SCRATCH_ZPOOL_NAME > /dev/null 2>&1; then
 		$ZPOOL_PROG destroy -f $SCRATCH_ZPOOL_NAME
 	fi
+	if [ -n "$SCRATCH_DEV" ] && [ -b "$SCRATCH_DEV" ]; then
+		losetup -j $SCRATCH_DEV | awk -F: '{print $1}' | \
+			xargs -r -n1 losetup -d
+	fi
+}
+
+ZFS_SCRATCH_MKFS_OPTS="-O mountpoint=legacy -O relatime=off -O compression=off"
+
+# recordsize=64K (vs the 128K ZFS default) so tests that gate on
+# _require_congruent_file_oplen with 64K op lengths can actually run; the
+# default notruns ~36 of them with "alloc unit 131072 larger than op length
+# 65536". 4K would unblock more in theory but exposes ZFS reflink+zero-range
+# integrity races under fsx — see generic/075 / 091 / 363. 64K is the safe
+# minimum that resolves the known 36 cases without that fallout.
+# Set after pool creation so callers (e.g. _scratch_mkfs_blocksized) can
+# override via `zfs set` without conflicting with `zpool create -O`.
+_zfs_set_default_recordsize()
+{
+	$ZFS_PROG set recordsize=64K $SCRATCH_ZPOOL_NAME
 }
 
 # Create a fresh scratch zpool/dataset on $SCRATCH_DEV.
 _zfs_scratch_mkfs()
 {
 	_zfs_destroy_scratch_pool
-	$ZPOOL_PROG create -f -O mountpoint=legacy $* $MKFS_OPTIONS \
-		$SCRATCH_ZPOOL_NAME $SCRATCH_DEV
+	$ZPOOL_PROG create -f $ZFS_SCRATCH_MKFS_OPTS $* $MKFS_OPTIONS \
+		$SCRATCH_ZPOOL_NAME $SCRATCH_DEV && \
+		_zfs_set_default_recordsize
 }
 
 # Create a scratch zpool spanning $SCRATCH_DEV_POOL.
 _zfs_scratch_pool_mkfs()
 {
 	_zfs_require_scratch_zpool_name
-	$ZPOOL_PROG create -f -O mountpoint=legacy $* $MKFS_OPTIONS \
-		$SCRATCH_ZPOOL_NAME $SCRATCH_DEV_POOL
+	$ZPOOL_PROG create -f $ZFS_SCRATCH_MKFS_OPTS $* $MKFS_OPTIONS \
+		$SCRATCH_ZPOOL_NAME $SCRATCH_DEV_POOL && \
+		_zfs_set_default_recordsize
 }
 
-# Create a scratch zpool of approximately the given size using refquota.
+# Create a scratch zpool of approximately the given size by stacking a sized
+# loop device on top of $SCRATCH_DEV, so the pool actually runs out of space
+# (ENOSPC) instead of hitting a refquota cap (EDQUOT).
 _zfs_scratch_mkfs_sized()
 {
 	local fssize=$1
 	shift
 	_zfs_destroy_scratch_pool
-	$ZPOOL_PROG create -f -O mountpoint=legacy -O refquota=$fssize \
-		$MKFS_OPTIONS $* $SCRATCH_ZPOOL_NAME $SCRATCH_DEV
+	local loop
+	loop=$(losetup --find --show --sizelimit=$fssize $SCRATCH_DEV) || \
+		_fail "losetup --sizelimit=$fssize $SCRATCH_DEV failed"
+	$ZPOOL_PROG create -f $ZFS_SCRATCH_MKFS_OPTS \
+		$MKFS_OPTIONS $* $SCRATCH_ZPOOL_NAME $loop && \
+		_zfs_set_default_recordsize
 }
 
 # Create a dataset on $TEST_DEV (which must already be a pool/parent-dataset).
@@ -61,8 +90,8 @@ _zfs_test_mkfs()
 # explicitly passed in by the caller.
 _zfs_try_mkfs_dev()
 {
-	$ZPOOL_PROG create -f -O mountpoint=legacy $MKFS_OPTIONS $* \
-		$SCRATCH_ZPOOL_NAME
+	$ZPOOL_PROG create -f $ZFS_SCRATCH_MKFS_OPTS $MKFS_OPTIONS $* \
+		$SCRATCH_ZPOOL_NAME && _zfs_set_default_recordsize
 }
 
 # Emit the mount-source argument used by _scratch_mount_options. For ZFS the
@@ -93,10 +122,15 @@ _require_zfs_test_dev()
 	fi
 }
 
-# Tests that want an uncompressed filesystem can _require_no_compress; ZFS
-# enables compression by default but we do not yet support disabling it at
-# test time, so always skip.
+# Tests that want an uncompressed filesystem can _require_no_compress.
+# Scratch pools created via _zfs_scratch_mkfs already have compression=off; we
+# verify the user's TEST_DEV is uncompressed too, otherwise on-disk block
+# accounting (statfs, du, etc.) won't match logical bytes written.
 _require_zfs_no_compress()
 {
-	_notrun "ZFS compression cannot be disabled for these tests"
+	local c
+	c=$($ZFS_PROG get -H -o value compression $TEST_DEV 2>/dev/null)
+	if [ "$c" != "off" ]; then
+		_notrun "TEST_DEV compression is '$c'; need 'off' for this test"
+	fi
 }

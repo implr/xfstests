@@ -42,9 +42,17 @@ $XFS_IO_PROG -f -c "pwrite -S 0xc7 -b $file_size 0 $file_size" \
 # create files with 2Kb because that results in extents inlined in the metadata
 # (btree leafs) and it's the fastest way to fill metadata space on btrfs, by
 # default btrfs inlines up to 2Kb of data).
+# btrfs wants 2K so the data stays inlined in btree leaves (metadata fill);
+# other filesystems gain nothing from that and just pay fork-exec cost per
+# filler. Use 1M elsewhere to keep the test under a minute on ZFS.
+if [ "$FSTYP" = "btrfs" ]; then
+	filler_size=2K
+else
+	filler_size=1M
+fi
 i=1
 while true; do
-	$XFS_IO_PROG -f -c "pwrite 0 2K" $SCRATCH_MNT/filler_$i &> /dev/null
+	$XFS_IO_PROG -f -c "pwrite 0 $filler_size" $SCRATCH_MNT/filler_$i &> /dev/null
 	[ $? -ne 0 ] && break
 	i=$(( i + 1 ))
 done
@@ -53,8 +61,12 @@ done
 # with ENOSPC for example.  However, XFS will sometimes run out of space.
 _reflink $SCRATCH_MNT/bar $SCRATCH_MNT/foo >>$seqres.full 2> $tmp.err
 cat $tmp.err
-test "$FSTYP" = "xfs" && grep -q 'No space left on device' $tmp.err && \
-	_notrun "ran out of space while cloning"
+case "$FSTYP" in
+xfs|zfs)
+	grep -q 'No space left on device' $tmp.err && \
+		_notrun "ran out of space while cloning"
+	;;
+esac
 
 # Unmount and mount the filesystem again to verify the operation was durably
 # persisted.

@@ -140,7 +140,7 @@ _attr_get_maxval_size()
 	pvfs2)
 		max_attrval_size=8192
 		;;
-	xfs|udf|9p|fuse)
+	xfs|udf|9p|fuse|zfs)
 		max_attrval_size=65536
 		;;
 	bcachefs)

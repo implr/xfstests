@@ -1510,6 +1510,14 @@ _scratch_mkfs_blocksized()
 	udf)
 		_scratch_mkfs -b $blocksize
 		;;
+	zfs)
+		# ZFS doesn't have a dedicated "block size" — recordsize is the
+		# upper bound of allocation units, so map blocksize to that.
+		# `zfs set` after `_zfs_scratch_mkfs` so we override the default
+		# recordsize that helper sets.
+		_zfs_scratch_mkfs && \
+			$ZFS_PROG set recordsize=$blocksize $SCRATCH_ZPOOL_NAME
+		;;
 	*)
 		_notrun "Filesystem $FSTYP not supported in _scratch_mkfs_blocksized"
 		;;
