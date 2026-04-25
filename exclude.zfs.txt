@@ -61,12 +61,27 @@ generic/275
 generic/387
 generic/511
 
-# Tests that stack dm-linear/dm-error on top of the scratch device. Doesn't
-# work when the scratch device is owned by an imported zpool.
+# Tests that stack dm-linear/dm-error/dm-flakey on top of the scratch device.
+# Doesn't work when the scratch device is owned by an imported zpool — would
+# need ZFS-aware _init_dmerror/_dmerror_mount helpers plus pool export-on-
+# unmount. 265-283/329/331 are reflink+dm-error CoW failure-injection tests;
+# the dm-error setup is what blocks them, not the reflink path.
 generic/081
 generic/108
 generic/250
 generic/252
+generic/265
+generic/266
+generic/267
+generic/268
+generic/276
+generic/278
+generic/279
+generic/281
+generic/282
+generic/283
+generic/329
+generic/331
 generic/338
 generic/347
 generic/405
@@ -93,26 +108,13 @@ generic/650
 # extremely slow
 generic/476
 
-# Random reflink / fsx DIO stuff. 617 is io_uring DIO fsx soak; hits READ
-# BAD DATA similar to 363. 091 fails fsx READ BAD DATA only when recordsize
-# < 128K (we run with 64K to enable the alloc-unit notrun bucket). Needs
-# deeper investigation.
+# fsx soaks that trip ZFS' DIO/buffered/io_uring CoW races. 091 fails fsx
+# READ BAD DATA only when recordsize < 128K (we run with 64K). 263 is the
+# DIO+sub-block-buffered fsx variant. 616/617 are the io_uring buffered/DIO
+# fsx soaks. Same family as 363. Needs ZFS-side investigation.
 generic/091
-generic/157
-generic/172
-generic/265
-generic/266
-generic/267
-generic/268
-generic/276
-generic/278
-generic/279
-generic/281
-generic/282
-generic/283
-generic/297
-generic/329
-generic/331
+generic/263
+generic/616
 generic/617
 
 # https://github.com/openzfs/zfs/issues/16014
@@ -121,25 +123,17 @@ generic/303
 # unknown hang
 generic/269
 
-# FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, dedup and other -ENOTSUPP
+# Sub-recordsize reflink/copy_range issues:
+#   144 - reflinks blksz*4+37 bytes; ZFS rejects the sub-recordsize tail with
+#         EINVAL since block_cloning only clones whole recordsize records
+#   564 - the _require_xfs_io_command "copy_range" "-f" probe in common/rc
+#         runs `pwrite 0 4k` then `copy_range -f 0 -d 4k -l 4k` against the
+#         same file (self-overlap, sub-recordsize). ZFS hangs in
+#         zfs_rangelock_enter waiting on a rangelock the same fd already
+#         holds — uninterruptible D-state, only freed by reboot. Real ZFS
+#         deadlock; candidate for openzfs upstream report.
 generic/144
-generic/263
-generic/430
-generic/431
-generic/432
-generic/433
 generic/564
-generic/565
-generic/616
-generic/657
-generic/658
-generic/659
-generic/660
-generic/663
-generic/664
-generic/665
-generic/670
-generic/672
 
 # fsx -e 1 post-EOF-page pollution: tests a zeroing behavior that's
 # fs-specific (opt-in per commit 9e2b0f4c). Also fails on tmpfs, not a
