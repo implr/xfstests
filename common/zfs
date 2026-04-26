@@ -3,11 +3,10 @@
 #
 # Common ZFS-specific helpers, sourced from common/config when FSTYP=zfs.
 
-# TODO: these should be driven by $MKFS_ZFS_PROG / $ZPOOL_PROG / $ZFS_UTIL_PROG
-# exported from common/config. For now we call the binaries by absolute path
-# to match the behaviour of the original out-of-tree ZFS support patches.
-ZPOOL_PROG=/sbin/zpool
-ZFS_PROG=/sbin/zfs
+# Discover zfs/zpool via PATH if available (works on distros that don't put
+# them in /sbin, e.g. NixOS). Fall back to the canonical /sbin location.
+ZPOOL_PROG=$(command -v zpool 2>/dev/null || echo /sbin/zpool)
+ZFS_PROG=$(command -v zfs 2>/dev/null || echo /sbin/zfs)
 
 _zfs_require_scratch_zpool_name()
 {

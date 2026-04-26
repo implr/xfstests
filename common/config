@@ -638,7 +638,10 @@ _check_device()
 		fi
 		;;
 	zfs)
-		if ! /sbin/zfs list -H $TEST_DEV > /dev/null 2>&1; then
+		# common/zfs is sourced later by _source_specific_fs in common/rc;
+		# we run before that, so resolve zfs ourselves.
+		local zfs_prog=$(command -v zfs 2>/dev/null || echo /sbin/zfs)
+		if ! $zfs_prog list -H $TEST_DEV > /dev/null 2>&1; then
 			_fatal "common/config: $name is not a ZFS pool"
 		fi
 		;;
