@@ -7,7 +7,11 @@
 #      zfs_rangelock_enter_impl -> zfs_get_data -> zil_lwb_write_issue ->
 #      zil_commit_impl -> zfs_sync); even cleanup rm -rf wedges in
 #      vfs_unlink. SIGKILL leaves rangelocks pinned.
-#   2. ARC OOM-kernel-panic (083/269/476/650): the in-flight write
+#   2. Directory-op concurrency wedge (310): parallel read/readdir/lseek on
+#      the same directory fd; ZFS appears to contend on the directory ZAP
+#      lock indefinitely. Test never terminates and leaves D-state
+#      kernel threads.
+#   3. ARC OOM-kernel-panic (083/269/476/650): the in-flight write
 #      backlog plus dirty data outpaces the ARC reclaim path on a 4 GiB
 #      scratch pool; the kernel OOM-kills its way through the whole VM
 #      before ZFS releases dirty buffers. Confirmed: running 083+269+476+650
@@ -18,6 +22,7 @@
 generic/013
 generic/083
 generic/269
+generic/310
 generic/476
 generic/650
 
