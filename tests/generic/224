@@ -24,7 +24,6 @@ _cleanup()
 # Import common functions.
 . ./common/filter
 
-_exclude_fs zfs
 
 _require_scratch
 
