@@ -85,12 +85,12 @@ _zfs_test_mkfs()
 	$ZFS_PROG create -o mountpoint=legacy $* $TEST_DEV
 }
 
-# Variant of _zfs_test_mkfs used by _try_mkfs_dev where the device name is
+# Variant of _zfs_scratch_mkfs used by _try_mkfs_dev where the device name is
 # explicitly passed in by the caller.
 _zfs_try_mkfs_dev()
 {
-	$ZPOOL_PROG create -f $ZFS_SCRATCH_MKFS_OPTS $MKFS_OPTIONS $* \
-		$SCRATCH_ZPOOL_NAME && _zfs_set_default_recordsize
+	$ZPOOL_PROG create -f $ZFS_SCRATCH_MKFS_OPTS $MKFS_OPTIONS \
+		$SCRATCH_ZPOOL_NAME $* && _zfs_set_default_recordsize
 }
 
 # Emit the mount-source argument used by _scratch_mount_options. For ZFS the

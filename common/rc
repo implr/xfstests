@@ -4092,8 +4092,9 @@ _require_scratch_dev_pool()
 		# can't use dd as it'll lead to unaligned writes so simply
 		# reset the first two zones.
 		if [ "`_zone_type "$i"`" = "none" ]; then
-			if [ -x /sbin/zpool ]; then
-				/sbin/zpool labelclear -f $i
+			local zpool_prog=$(command -v zpool 2>/dev/null)
+			if [ -n "$zpool_prog" ]; then
+				$zpool_prog labelclear -f $i
 			fi
 			dd if=/dev/zero of=$i bs=4096 count=100 > /dev/null 2>&1
 		else
