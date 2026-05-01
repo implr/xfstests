@@ -19,6 +19,12 @@
 # All five tests fall in the same ZFS write-stress family. Defer until ZFS
 # tunables (zfs_dirty_data_max, ARC limits) are configured for this VM size,
 # or until openzfs fixes the rangelock/ZIL contention.
+# Upstream:
+#   openzfs/zfs#11792 - deadlock when running xfstests generic/013 (open) -
+#     direct match for the rangelock livelock above.
+#   openzfs/zfs#18050 - multiple OOM killings on speedy rsync backup (open) -
+#     ARC reclaim can't keep up with dirty-data pressure; same family as the
+#     083/269/476/650 panic.
 generic/013
 generic/083
 generic/269
@@ -86,6 +92,8 @@ generic/449
 
 # ZFS fallocate is a no-op: returns success but doesn't reserve blocks.
 # Tests that depend on real prealloc semantics therefore fail.
+# Upstream openzfs/zfs#11073 (closed) acknowledged the advertise-but-don't-
+# allocate behavior; allocation was never actually implemented.
 #   103 - allocates blocks on nearly-full fs, expects success
 #   228 - tests prealloc hitting RLIMIT_FSIZE
 #   256 - dir prealloc (mkfs_sized + fallocate on dir)
@@ -209,7 +217,8 @@ generic/564
 generic/363
 
 # ZFS doesn't implement cgroup-aware writeback accounting (same as most
-# non-btrfs/non-xfs filesystems).
+# non-btrfs/non-xfs filesystems). Tracked upstream as openzfs/zfs#13662
+# "Annotate writeback I/O to the correct cgroup" (open).
 generic/563
 
 # open_by_handle on a kept-open-but-unlinked file: ZFS returns ESTALE (116)
