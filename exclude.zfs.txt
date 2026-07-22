@@ -58,26 +58,12 @@ generic/591
 #   093 - append doesn't clear fscaps
 #   193 - chown(2) clears sgid bit even when group-exec was not set
 #   355 - direct write doesn't clear suid/sgid
-#   375 - chmod doesn't clear SGID in some cases
-#   513 - reflink doesn't clear fscaps
-#   673 - reflink doesn't clear suid/sgid
-#   675 - reflink doesn't clear fscaps
-#   683 - fallocate doesn't clear suid/sgid
-#   684 - fpunch doesn't clear suid/sgid
-#   685 - fzero doesn't clear suid/sgid
-#   688 - fallocate doesn't clear fscaps
-# (683/684/685/688 were auto-notrun before recordsize=64K via alloc-unit check.)
+# The fallocate/fpunch/fzero and reflink cases (683/684/685/688 and
+# 513/673/675) plus 375 (chmod SGID) are resolved by the SUID/SGID + xattr
+# fix (file_modified() on fallocate/punch/zero/clone) and are un-gated.
 generic/093
 generic/193
 generic/355
-generic/375
-generic/513
-generic/673
-generic/675
-generic/683
-generic/684
-generic/685
-generic/688
 
 # ZFS POSIX-ACL (acltype=posix) quirks:
 #   319 - parent default ACL's o:: perms not intersected with requested mode;
@@ -95,19 +81,24 @@ generic/449
 # Upstream openzfs/zfs#11073 (closed) acknowledged the advertise-but-don't-
 # allocate behavior; allocation was never actually implemented.
 #   103 - allocates blocks on nearly-full fs, expects success
-#   228 - tests prealloc hitting RLIMIT_FSIZE
 #   256 - dir prealloc (mkfs_sized + fallocate on dir)
 #   274 - write into preallocated region on nearly-full fs
 #   422 - falloc -k then pwrite into preallocated region; compares du blocks
 #         before/after writeback. Without real prealloc, the "before" count
 #         doesn't include the falloc range, so it diverges from "after".
-#   586 - expects extsize-style prealloc past write end
 generic/103
-generic/228
 generic/256
 generic/274
 generic/422
-generic/586
+# Un-gated below (fixed) -- recorded here to correct the reason:
+#   228 - was grouped with the prealloc no-ops, but the real defect was that
+#         ZFS fallocate never enforced RLIMIT_FSIZE at all.  Fixed by adding
+#         inode_newsize_ok() to zpl_fallocate_common().
+#   586 - MIS-GATED here as "extsize-style prealloc past write end".  It is
+#         not a prealloc issue: it is data corruption from a mode-0 fallocate
+#         racing an appending O_DIRECT write -- the fallocate's set-size
+#         truncated the file the write had just extended.  Fixed by making
+#         the fallocate extend grow-only (zfs_extend).
 
 # Tight-pool ENOSPC vs near-full slack: with a sized-loop-backed pool, ZFS
 # pool overhead leaves so little headroom that even open()/touch can hit
@@ -115,46 +106,35 @@ generic/586
 # to leave more slack and these passed; the ENOSPC is now correct but the
 # tests' expectations don't match ZFS's pool-level accounting.
 generic/275
-generic/387
 generic/511
 
-# Tests that stack another block layer (LVM, dm-error, dm-thin, dmhugedisk)
-# on top of the scratch device. Doesn't work when the scratch device is
-# owned by an imported zpool — would need ZFS-aware setup helpers that
-# export the pool, build the dm/LVM stack, then re-create the pool on top.
-# Several sub-categories with different mechanisms but the same root cause:
-#   LVM (pvcreate/vgcreate/lvcreate, including dm-snapshot via lvcreate):
-#     081, 108
-#   dm-error CoW failure-injection (most are reflink + dm-error variants;
-#     dm-error setup is what blocks them, not the reflink path):
-#     250, 252, 265-268, 276, 278-279, 281-283, 329, 331, 338,
-#     441, 475, 484
-#   dm-thin (would auto-notrun via _require_dm_target on kernels without
-#     dm-thin loaded; we keep them explicit since modprobe usually succeeds):
-#     347, 405
-#   dmhugedisk (likewise auto-notrun via _require_dmhugedisk on kernels
-#     without it):
-#     620
+# Block-layer-on-zpool (impossible as written): these stack LVM / dm-thin /
+# dmhugedisk on the scratch device, which ZFS owns as an imported pool.
+#   081, 108 - LVM (pvcreate/vgcreate/lvcreate, incl. dm-snapshot)
+#   347, 405 - dm-thin
+#   620      - dmhugedisk
+#
+# dm-error: src/dmerror now sources common/$FSTYP so _zfs_dmerror_clear is
+# defined -- the helper exec's as its own process (via src/fsync-err) and so
+# bypassed common/rc's _source_specific_fs.  With that fix the fsync-based
+# dm-error tests pass on ZFS and are UN-GATED:
+#     250, 252, 265, 267, 268, 276, 279, 282, 283, 329, 441.
+# What remains cannot pass on a single-vdev ZFS pool as written:
+#   266, 281, 338, 475 - total-device-failure wedges the pool (txg_sync /
+#       z_upgrade stuck in D state, umount hangs); needs pool redundancy.
+#   278, 331, 484 - assert a *synchronous* write error to a failing device.
+#       ZFS acks writes into the txg and surfaces the error at fsync, not at
+#       the write() syscall, so a direct write to a dm-error device succeeds.
+#       (Candidate for an upstream capability gate rather than an exclude.)
 generic/081
 generic/108
-generic/250
-generic/252
-generic/265
 generic/266
-generic/267
-generic/268
-generic/276
 generic/278
-generic/279
 generic/281
-generic/282
-generic/283
-generic/329
 generic/331
 generic/338
 generic/347
 generic/405
-generic/441
 generic/475
 generic/484
 generic/620
@@ -185,12 +165,10 @@ generic/224
 # zpool-on-loop isn't supported by our helpers; structural.
 generic/361
 
-# fsx soaks that trip ZFS' DIO/buffered/io_uring CoW races. 091 fails fsx
-# READ BAD DATA only when recordsize < 128K (we run with 64K). 263 is the
-# DIO+sub-block-buffered fsx variant. 616/617 are the io_uring buffered/DIO
-# fsx soaks. Same family as 363. Needs ZFS-side investigation.
-generic/091
-generic/263
+# io_uring fsx soaks (buffered/DIO) on this kernel; still need ZFS-side
+# investigation. 091 (fsx READ BAD DATA at recordsize < 128K) and 263
+# (DIO + sub-block fsx) were in this family and are now fixed by the
+# Direct I/O pending-free read fix, so they are un-gated.
 generic/616
 generic/617
 
@@ -202,31 +180,22 @@ generic/303
 # Sub-recordsize reflink/copy_range issues:
 #   144 - reflinks blksz*4+37 bytes; ZFS rejects the sub-recordsize tail with
 #         EINVAL since block_cloning only clones whole recordsize records
-#   564 - the _require_xfs_io_command "copy_range" "-f" probe in common/rc
-#         runs `pwrite 0 4k` then `copy_range -f 0 -d 4k -l 4k` against the
-#         same file (self-overlap, sub-recordsize). ZFS hangs in
-#         zfs_rangelock_enter waiting on a rangelock the same fd already
-#         holds — uninterruptible D-state, only freed by reboot. Real ZFS
-#         deadlock; candidate for openzfs upstream report.
+# (564 was a self-clone copy_range deadlock; fixed by the single combined
+#  writer rangelock in zfs_clone_range and un-gated.)
 generic/144
-generic/564
 
-# fsx -e 1 post-EOF-page pollution: tests a zeroing behavior that's
-# fs-specific (opt-in per commit 9e2b0f4c). Also fails on tmpfs, not a
-# ZFS correctness issue.
-generic/363
+# fsx -e 1 post-EOF-page pollution.  Previously dismissed here as an
+# fs-specific zeroing quirk ("not a ZFS correctness issue") -- that was
+# WRONG.  It is a real ZFS bug: an mmap store into the last partial page
+# past EOF was left in the page cache and, once the file was extended to
+# cover it (a write past EOF, a truncate-up, or a fallocate), surfaced on
+# read and was written back to disk (confirmed with zdb).  Fixed by zeroing
+# the old partial-page tail on extend (zfs_write + zfs_extend); un-gated.
 
 # ZFS doesn't implement cgroup-aware writeback accounting (same as most
 # non-btrfs/non-xfs filesystems). Tracked upstream as openzfs/zfs#13662
 # "Annotate writeback I/O to the correct cgroup" (open).
 generic/563
-
-# open_by_handle on a kept-open-but-unlinked file: ZFS returns ESTALE (116)
-# after drop_caches, where ext4/xfs/btrfs return success. ZFS keeps unlinked-
-# but-referenced inodes on its on-disk unlinked set, but fh_to_dentry doesn't
-# resolve through that set after the inode is evicted from cache. Real ZFS
-# bug, candidate for openzfs upstream report.
-generic/467
 
 # t_readdir_3 random-offset seek + getdents64 returns 0 (EOF) on ZFS. ZFS
 # readdir d_off values are ZAP hash cookies, not a dense monotonic space —
@@ -235,3 +204,18 @@ generic/467
 # and assumes random offsets always yield an entry; that assumption is
 # fs-specific and incompatible with hash-cookie directories like ZFS.
 generic/676
+
+# Newly reachable with ZFS FIEMAP support (previously notrun for lack of
+# .fiemap). 009/092/094/679 asserted an "unwritten" extent type after
+# fallocate; ZFS represents preallocation as holes plus a space reservation
+# and never creates unwritten extents, so they are now skipped by the upstream
+# _require_unwritten_extents capability check and no longer need excluding.
+#   255 - punch-hole layout differs on ZFS (not recordsize related) [under review]
+#   301 - CoW fragmentation bound assumes an allocator that merges  [under review]
+generic/255
+generic/301
+# FIDEDUPERANGE (openzfs/zfs#18745):
+#   517 - dedupes a sub-recordsize whole file into the middle of another
+#         file; ZFS block cloning only clones whole records so this is
+#         EINVAL (same family as the 144 reflink note above)
+generic/517
