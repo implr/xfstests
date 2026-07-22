@@ -254,8 +254,11 @@ generic/173
 
 # idmapped-mounts nested user namespace: vfstest/idmapped-mounts'
 # nested_userns case fails at sys_mount_setattr when re-mapping an already
-# idmapped mount from within a nested userns. ZFS idmapped-mount support
-# doesn't cover the nested-userns remap path. Structural ZFS/VFS gap.
+# idmapped mount from within a nested userns. Worse than a plain failure --
+# under the qemu CI (kernel 6.8, ZFS 2.4.99) it DEADLOCKS the pool: txg_sync
+# and dp_sync_taskq wedge and the post-test umount blocks forever (hung-task
+# warnings escalating past 8+ minutes), timing out the whole run. Candidate
+# for an openzfs upstream report alongside the other deadlocks (564, 761).
 generic/645
 
 # st_blocks accounting after truncate: test extends a file (or punches) and
