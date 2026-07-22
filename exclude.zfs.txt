@@ -127,8 +127,8 @@ generic/511
 #     081, 108
 #   dm-error CoW failure-injection (most are reflink + dm-error variants;
 #     dm-error setup is what blocks them, not the reflink path):
-#     250, 252, 265-268, 276, 278-279, 281-283, 329, 331, 338,
-#     441, 475, 484
+#     250, 252, 265-268, 271-272, 276, 278-279, 281-283, 329, 331, 338,
+#     441, 475, 484, 648, 753
 #   dm-thin (would auto-notrun via _require_dm_target on kernels without
 #     dm-thin loaded; we keep them explicit since modprobe usually succeeds):
 #     347, 405
@@ -143,6 +143,8 @@ generic/265
 generic/266
 generic/267
 generic/268
+generic/271
+generic/272
 generic/276
 generic/278
 generic/279
@@ -158,6 +160,8 @@ generic/441
 generic/475
 generic/484
 generic/620
+generic/648
+generic/753
 
 # Mount-shared-subtree tests that bypass _scratch_mount and call
 # `mount -t $FSTYP $SCRATCH_DEV ...` directly on the block device. ZFS
@@ -188,11 +192,15 @@ generic/361
 # fsx soaks that trip ZFS' DIO/buffered/io_uring CoW races. 091 fails fsx
 # READ BAD DATA only when recordsize < 128K (we run with 64K). 263 is the
 # DIO+sub-block-buffered fsx variant. 616/617 are the io_uring buffered/DIO
-# fsx soaks. Same family as 363. Needs ZFS-side investigation.
+# fsx soaks. 759/760 are the newer fsx soak variants (every falloc mode ZFS
+# lacks gets auto-disabled, then the CoW/DIO soak still trips). Same family
+# as 363. Needs ZFS-side investigation.
 generic/091
 generic/263
 generic/616
 generic/617
+generic/759
+generic/760
 
 # https://github.com/openzfs/zfs/issues/16014 — high-offset reflink: cp
 # --reflink=always on a sparse file gets SIGKILL'd, test output truncates
@@ -235,3 +243,30 @@ generic/467
 # and assumes random offsets always yield an entry; that assumption is
 # fs-specific and incompatible with hash-cookie directories like ZFS.
 generic/676
+
+# Reflink + mmap CoW on a full filesystem: after filling the fs to ENOSPC,
+# the test expects the next mmap CoW store to fault SIGBUS (out of space to
+# break the shared extent). ZFS returns cleanly instead (no SIGBUS), so the
+# test's SIGBUS handler never fires. Same reflink/CoW space-accounting family
+# as the sub-recordsize reflink bucket; ZFS doesn't reserve-on-fault the way
+# the test assumes.
+generic/173
+
+# idmapped-mounts nested user namespace: vfstest/idmapped-mounts'
+# nested_userns case fails at sys_mount_setattr when re-mapping an already
+# idmapped mount from within a nested userns. ZFS idmapped-mount support
+# doesn't cover the nested-userns remap path. Structural ZFS/VFS gap.
+generic/645
+
+# st_blocks accounting after truncate: test extends a file (or punches) and
+# checks the allocated block count stays within a tight range, but ZFS
+# reports st_blocks=1 — ZFS is sparse and txg-delayed, so blocks aren't
+# accounted the way the test expects (same falloc-is-a-no-op / delayed-alloc
+# family as the other space-accounting excludes).
+generic/701
+
+# DIO + buffered mid-write checksum race: an io thread fails during a
+# concurrent direct/buffered write mix. Reproducible; likely a real ZFS
+# DIO coherency bug rather than a test/harness issue. Candidate for an
+# openzfs upstream report; excluded for now with the rest.
+generic/761
