@@ -273,3 +273,14 @@ generic/701
 # DIO coherency bug rather than a test/harness issue. Candidate for an
 # openzfs upstream report; excluded for now with the rest.
 generic/761
+
+# KERNEL PANIC. Races file reads against a slow reflink (FICLONE) on a
+# heavily block-cloned file. On ZFS 2.4.99 / kernel 6.8 this double-frees a
+# block: txg_sync hits "segment already in tree" in the metaslab free path
+# and panics the box, taking down the whole run:
+#   panic -> zfs_range_tree_verify_not_present -> metaslab_check_free_impl
+#   -> metaslab_check_free -> zio_free_sync -> dsl_scan_free_block_cb
+#   -> bpobj_iterate_blkptrs (freeing deferred/BRT blocks during dsl_scan)
+# Almost certainly a block_cloning (BRT) refcount / space-map corruption
+# bug. Must-fix upstream and must-exclude here (a panic kills every run).
+generic/733
