@@ -52,29 +52,39 @@ generic/175
 generic/551
 generic/591
 
-# ZFS doesn't track setuid/setgid/fscaps the way other filesystems do —
-# clears too aggressively in some cases, not at all in others. Same class as
-# the POSIX-ACL quirks below; candidate for openzfs upstream reports.
-#   093 - append doesn't clear fscaps
-#   193 - chown(2) clears sgid bit even when group-exec was not set
-#   355 - direct write doesn't clear suid/sgid
+# setuid/setgid/fscaps clearing -- all three below were real ZFS bugs, now
+# fixed and UN-GATED.  (This note corrects the old "candidate for upstream
+# reports" framing: these were fixable defects that diverged from Linux
+# should_remove_suid()/killpriv semantics, not inherent fs-specific quirks.)
+#   093 - a write left the security.capability xattr in place.  ZFS never
+#         stripped privileges on write the way the generic VFS path does;
+#         fixed by setting SB_NOSEC and calling file_remove_privs() in
+#         zpl_iter_write() (skipped via S_NOSEC for already-clean files).
+#   193 - chown()/truncate cleared the set-group-ID bit even with no group
+#         execute bit set.  secpolicy_setid_clear() now clears S_ISGID only
+#         when S_IXGRP is set (S_ISUID is always cleared).
+#   355 - a direct write did not clear set-user-ID when the file had no
+#         execute bits.  zfs_clear_setid_bits_if_necessary() gated the whole
+#         clear on "any execute bit"; it now always clears S_ISUID and clears
+#         S_ISGID only when S_IXGRP is set.
 # The fallocate/fpunch/fzero and reflink cases (683/684/685/688 and
-# 513/673/675) plus 375 (chmod SGID) are resolved by the SUID/SGID + xattr
-# fix (file_modified() on fallocate/punch/zero/clone) and are un-gated.
-generic/093
-generic/193
-generic/355
+# 513/673/675) plus 375 (chmod SGID) were already resolved by the
+# file_modified() work and are un-gated.
 
-# ZFS POSIX-ACL (acltype=posix) quirks:
-#   319 - parent default ACL's o:: perms not intersected with requested mode;
-#         child gets other::r-x where expected other::---
-#   444 - parent dir's SGID bit not inherited by child mkdir when default ACL
-#         is present
-#   449 - acl+attr ENOSPC test: file mode bits change to "-rwxr-----" when
-#         setfacl partially applies; xattr-stored ACL on ZFS leaks group bits
-generic/319
-generic/444
-generic/449
+# POSIX ACL tests require acltype=posixacl to run.  Under the runner's
+# default acltype=off they self-skip via _require_acls ("ACLs not supported
+# by this filesystem type: zfs"), so they no longer need excluding.  Under
+# acltype=posixacl on the current module:
+#   319, 444 - pass; the default-ACL o:: intersection and SGID-inheritance
+#              quirks noted here previously no longer reproduce.
+#   449 - was a real bug: setfacl updated the mode bits before storing the
+#         ACL, so a store that failed for lack of space (ENOSPC) left the
+#         mode changed without the ACL.  Fixed by deferring the mode update
+#         in zpl_set_posix_acl() until the ACL store succeeds.
+# (375, un-gated with the file_modified() setid work, likewise self-skips
+#  under acltype=off; under acltype=posixacl it still fails -- setfacl does
+#  not clear the set-group-ID bit when the owner is not in the owning group
+#  -- a separate, still-open POSIX-ACL bug.)
 
 # ZFS fallocate is a no-op: returns success but doesn't reserve blocks.
 # Tests that depend on real prealloc semantics therefore fail.
@@ -159,11 +169,15 @@ generic/589
 # branch; preserved as-is.
 generic/224
 
-# Test creates a FS image inside SCRATCH_MNT, creates a loop device for it,
-# then calls _mkfs_dev on the loop dev — which for us becomes `zpool create
-# /dev/loopN` and fails ("invalid character '/' in pool name"). Nested-
-# zpool-on-loop isn't supported by our helpers; structural.
-generic/361
+# Nested filesystem images (was 361, un-gated).  These build a filesystem on
+# a device the test supplies itself -- an image or loop device inside
+# SCRATCH_MNT -- and then mount that device directly.  Neither half maps to
+# ZFS: a pool is mounted by dataset name, not by its backing device, and the
+# nested pool cannot reuse an already-imported $SCRATCH_ZPOOL_NAME.  Rather
+# than exclude them, _zfs_try_mkfs_dev() now _notrun's with that reason, so
+# they self-skip.  This also stopped generic/648 (nested log recovery under
+# dm-error) from failing every run with "cannot create 'scratch': pool
+# already exists".
 
 # io_uring fsx soaks (buffered/DIO) on this kernel; still need ZFS-side
 # investigation. 091 (fsx READ BAD DATA at recordsize < 128K) and 263
