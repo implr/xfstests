@@ -1,235 +1,122 @@
-# Heavy fsstress / heavy-write soaks. Two failure modes seen on this kernel
-# + ZFS 2.4.1, both unrecoverable without reboot:
-#   1. Rangelock livelock (013): fsstress writers hold per-vnode rangelocks
-#      while zil_commit, called from the same writer's fsync/sync_fs path,
-#      blocks in zfs_get_data -> zfs_rangelock_enter waiting on that same
-#      writer's rangelock. Threads pile up in D state (cv_wait_common ->
-#      zfs_rangelock_enter_impl -> zfs_get_data -> zil_lwb_write_issue ->
-#      zil_commit_impl -> zfs_sync); even cleanup rm -rf wedges in
-#      vfs_unlink. SIGKILL leaves rangelocks pinned.
-#   2. Directory-op concurrency wedge (310): parallel read/readdir/lseek on
-#      the same directory fd; ZFS appears to contend on the directory ZAP
-#      lock indefinitely. Test never terminates and leaves D-state
-#      kernel threads.
-#   3. ARC OOM-kernel-panic (083/269/476/650): the in-flight write
-#      backlog plus dirty data outpaces the ARC reclaim path on a 4 GiB
-#      scratch pool; the kernel OOM-kills its way through the whole VM
-#      before ZFS releases dirty buffers. Confirmed: running 083+269+476+650
-#      together kernel-panicked the VM.
-# All five tests fall in the same ZFS write-stress family. Defer until ZFS
-# tunables (zfs_dirty_data_max, ARC limits) are configured for this VM size,
-# or until openzfs fixes the rangelock/ZIL contention.
-# Upstream:
-#   openzfs/zfs#11792 - deadlock when running xfstests generic/013 (open) -
-#     direct match for the rangelock livelock above.
-#   openzfs/zfs#18050 - multiple OOM killings on speedy rsync backup (open) -
-#     ARC reclaim can't keep up with dirty-data pressure; same family as the
-#     083/269/476/650 panic.
-generic/013
-generic/083
-generic/269
-generic/310
-generic/476
-generic/650
+# Tests excluded on ZFS.
+#
+# IMPORTANT: this list is calibrated against the ZFS built from our
+# own branch, which carries 34 commits that are NOT in upstream
+# OpenZFS. Only one of them has been submitted upstream: the block
+# cloning double free fix behind generic/733 (openzfs/zfs#18853).
+# The other 33 exist only here. Several tests absent from this list
+# pass only because of those commits, so running this file against
+# stock OpenZFS will produce failures it does not account for. Treat
+# it as valid for this branch until the rest are upstreamed.
+#
+# Every entry here was measured, not assumed. A full -g auto run was
+# made on five pool topologies (single disk at ashift 9 and 12, a
+# 3-disk stripe, a 2-way mirror, raidz1) with only the five
+# block-layer cases excluded, so each test below has a verdict from
+# all five. Each group records what was actually observed.
+#
+# Fifteen tests were dropped because that run showed they no longer
+# need excluding on this branch:
+#   013, 139, 224, 269, 310, 476, 591 and 650 pass on all five.
+#     013, 310, 476 and 650 were gated for a rangelock livelock and
+#     an ARC OOM panic, neither of which reproduces here.
+#     269 passes only because of our local commit "Return a negative
+#     error from the writepage callback"; without it the writeback
+#     loop warns and the test fails. 139 exercises direct I/O over
+#     cloned blocks, which several of our local clone and Direct I/O
+#     fixes touch, so it is unlikely to pass on stock OpenZFS.
+#   118, 119, 144, 517, 563, 616 and 617 self-skip on all five. The
+#     capability checks behind those skips are upstream, so these
+#     removals do not depend on our commits.
 
-# NixOS test VM: same ZFS reflink + cycle_mount / DIO race family as the
-# heavy-fsstress bucket above, but exposed reliably under the tighter
-# timing of the qemu-kvm + 9p test runner. They pass on plain Ubuntu in
-# our setup. Not actionable from xfstests' side; either openzfs upstream
-# fixes the underlying rangelock/ZIL races, or we tune zfs_dirty_data_max
-# / vdev_async_write_active_max_dirty_percent for the runner.
-#   118 - reflink + buffered write + _test_cycle_mount → umount busy
-#   119 - same family
-#   139 - directio CoW + _test_cycle_mount → file2 md5 mismatch
-#   175 - sub-recordsize reflink path that hits XFS_IOC_CLONE_RANGE EINVAL
-#         less reliably on Ubuntu, more reliably on the NixOS runner
-#   551 - aio-dio-write-verify times out under tighter scheduling
-#   591 - splice + concurrent reader/writer races
-generic/118
-generic/119
-generic/139
-generic/175
-generic/551
-generic/591
+# Block layer stacked on a disk ZFS owns. Impossible on any
+# topology: these build LVM, dm-thin or dmhugedisk on the scratch
+# disk while it is an imported pool member.
+#   081, 108: LVM (pvcreate/vgcreate/lvcreate)
+#   347, 405: dm-thin
+#   620:      dmhugedisk
+generic/081
+generic/108
+generic/347
+generic/405
+generic/620
 
-# setuid/setgid/fscaps clearing -- all three below were real ZFS bugs, now
-# fixed and UN-GATED.  (This note corrects the old "candidate for upstream
-# reports" framing: these were fixable defects that diverged from Linux
-# should_remove_suid()/killpriv semantics, not inherent fs-specific quirks.)
-#   093 - a write left the security.capability xattr in place.  ZFS never
-#         stripped privileges on write the way the generic VFS path does;
-#         fixed by setting SB_NOSEC and calling file_remove_privs() in
-#         zpl_iter_write() (skipped via S_NOSEC for already-clean files).
-#   193 - chown()/truncate cleared the set-group-ID bit even with no group
-#         execute bit set.  secpolicy_setid_clear() now clears S_ISGID only
-#         when S_IXGRP is set (S_ISUID is always cleared).
-#   355 - a direct write did not clear set-user-ID when the file had no
-#         execute bits.  zfs_clear_setid_bits_if_necessary() gated the whole
-#         clear on "any execute bit"; it now always clears S_ISUID and clears
-#         S_ISGID only when S_IXGRP is set.
-# The fallocate/fpunch/fzero and reflink cases (683/684/685/688 and
-# 513/673/675) plus 375 (chmod SGID) were already resolved by the
-# file_modified() work and are un-gated.
+# dm-error total device failure. Wedges the pool on every topology:
+# the scratch pool suspends and txg_sync plus umount sit in D state
+# until the machine is reset. An earlier note claimed these needed
+# pool redundancy. That was wrong. _zfs_dmerror_init builds the pool
+# on a single dm device whatever the topology, so redundancy never
+# applies and all five wedge identically.
+generic/266
+generic/281
+generic/338
+generic/475
 
-# POSIX ACL tests require acltype=posixacl to run.  Under the runner's
-# default acltype=off they self-skip via _require_acls ("ACLs not supported
-# by this filesystem type: zfs"), so they no longer need excluding.  Under
-# acltype=posixacl on the current module:
-#   319, 444 - pass; the default-ACL o:: intersection and SGID-inheritance
-#              quirks noted here previously no longer reproduce.
-#   449 - was a real bug: setfacl updated the mode bits before storing the
-#         ACL, so a store that failed for lack of space (ENOSPC) left the
-#         mode changed without the ACL.  Fixed by deferring the mode update
-#         in zpl_set_posix_acl() until the ACL store succeeds.
-# (375, un-gated with the file_modified() setid work, likewise self-skips
-#  under acltype=off; under acltype=posixacl it still fails -- setfacl does
-#  not clear the set-group-ID bit when the owner is not in the owning group
-#  -- a separate, still-open POSIX-ACL bug.)
+# Writes that fail synchronously. ZFS acknowledges a write into the
+# open txg and reports the error at fsync, so a write to a failing
+# device succeeds and these see no error where they expect one.
+# Fails on all five. Better solved upstream with a capability check
+# than excluded here.
+#
+# generic/271 and 272 (DIO CoW with a failing write) fail the same
+# way on all five but are deliberately left running rather than
+# added here, so the behaviour stays visible.
+generic/278
+generic/331
+generic/484
 
-# ZFS fallocate is a no-op: returns success but doesn't reserve blocks.
-# Tests that depend on real prealloc semantics therefore fail.
-# Upstream openzfs/zfs#11073 (closed) acknowledged the advertise-but-don't-
-# allocate behavior; allocation was never actually implemented.
-#   103 - allocates blocks on nearly-full fs, expects success
-#   256 - dir prealloc (mkfs_sized + fallocate on dir)
-#   274 - write into preallocated region on nearly-full fs
-#   422 - falloc -k then pwrite into preallocated region; compares du blocks
-#         before/after writeback. Without real prealloc, the "before" count
-#         doesn't include the falloc range, so it diverges from "after".
+# fallocate does not reserve space. ZFS advertises fallocate but
+# does not allocate blocks (openzfs/zfs#11073), so tests that need
+# real preallocation fail on all five.
+#   103: allocate on a nearly full filesystem
+#   256: preallocate a directory
+#   274: write into a preallocated region when nearly full
+#   422: falloc -k then pwrite, compares du across writeback
 generic/103
 generic/256
 generic/274
 generic/422
-# Un-gated below (fixed) -- recorded here to correct the reason:
-#   228 - was grouped with the prealloc no-ops, but the real defect was that
-#         ZFS fallocate never enforced RLIMIT_FSIZE at all.  Fixed by adding
-#         inode_newsize_ok() to zpl_fallocate_common().
-#   586 - MIS-GATED here as "extsize-style prealloc past write end".  It is
-#         not a prealloc issue: it is data corruption from a mode-0 fallocate
-#         racing an appending O_DIRECT write -- the fallocate's set-size
-#         truncated the file the write had just extended.  Fixed by making
-#         the fallocate extend grow-only (zfs_extend).
 
-# Tight-pool ENOSPC vs near-full slack: with a sized-loop-backed pool, ZFS
-# pool overhead leaves so little headroom that even open()/touch can hit
-# ENOSPC where the test expects a partial-write-then-ENOSPC. Refquota used
-# to leave more slack and these passed; the ENOSPC is now correct but the
-# tests' expectations don't match ZFS's pool-level accounting.
+# Pool-level space accounting versus the slack these expect. On a
+# sized pool ZFS returns ENOSPC where a partial write followed by
+# ENOSPC is expected. Fails on all five.
 generic/275
 generic/511
 
-# Block-layer-on-zpool (impossible as written): these stack LVM / dm-thin /
-# dmhugedisk on the scratch device, which ZFS owns as an imported pool.
-#   081, 108 - LVM (pvcreate/vgcreate/lvcreate, incl. dm-snapshot)
-#   347, 405 - dm-thin
-#   620      - dmhugedisk
-#
-# dm-error: src/dmerror now sources common/$FSTYP so _zfs_dmerror_clear is
-# defined -- the helper exec's as its own process (via src/fsync-err) and so
-# bypassed common/rc's _source_specific_fs.  With that fix the fsync-based
-# dm-error tests pass on ZFS and are UN-GATED:
-#     250, 252, 265, 267, 268, 276, 279, 282, 283, 329, 441.
-# What remains cannot pass on a single-vdev ZFS pool as written:
-#   266, 281, 338, 475 - total-device-failure wedges the pool (txg_sync /
-#       z_upgrade stuck in D state, umount hangs); needs pool redundancy.
-#   278, 331, 484 - assert a *synchronous* write error to a failing device.
-#       ZFS acks writes into the txg and surfaces the error at fsync, not at
-#       the write() syscall, so a direct write to a dm-error device succeeds.
-#       (Candidate for an upstream capability gate rather than an exclude.)
-generic/081
-generic/108
-generic/266
-generic/278
-generic/281
-generic/331
-generic/338
-generic/347
-generic/405
-generic/475
-generic/484
-generic/620
-
-# Mount-shared-subtree tests that bypass _scratch_mount and call
-# `mount -t $FSTYP $SCRATCH_DEV ...` directly on the block device. ZFS
-# expects the dataset name as the mount source, not the device, so every
-# such mount fails with "mount: unknown filesystem". Different mechanism
-# from the dm/LVM bucket above but same family of "tests don't go through
-# the FS-specific mount helper". Would need either a ZFS branch in each
-# test or a generic _get_mount that respects FSTYP=zfs.
+# Mount by device rather than by dataset. These call mount(8)
+# directly on $SCRATCH_DEV, but ZFS mounts a pool by dataset name,
+# so the mount fails. Fails on all five. Needs a ZFS branch in each
+# test, or a generic mount helper that respects FSTYP=zfs.
 generic/409
 generic/410
 generic/411
 generic/589
 
-# Delayed-allocation ENOSPC test: pre-existing exclusion from the initial
-# ZFS port (Behlendorf's old patches). ZFS uses txg-based commits rather
-# than page-based delayed allocation, so the test's premise (silent dmesg
-# under heavy concurrent buffered write + O_DIRECT read at near-ENOSPC)
-# doesn't map cleanly. Root cause not re-characterized on the current
-# branch; preserved as-is.
-generic/224
+# ARC memory deadlock. Passes on the four 4-CPU topologies but
+# panics raidz1 (6 CPUs, 6 GiB) with "Kernel panic - not syncing:
+# System is deadlocked on memory", reproduced twice. The write
+# backlog outruns ARC reclaim and the kernel deadlocks instead of
+# throttling. Same family as openzfs/zfs#18050. Capping zfs_arc_max
+# for the VM size avoids it, so this is as much a tuning question as
+# a bug, but it panics the machine, so it stays excluded until one
+# or the other is settled.
+#
+# Note the passes above also depend on our local writepage error
+# commit; before it this test failed on every topology.
+generic/083
 
-# Nested filesystem images (was 361, un-gated).  These build a filesystem on
-# a device the test supplies itself -- an image or loop device inside
-# SCRATCH_MNT -- and then mount that device directly.  Neither half maps to
-# ZFS: a pool is mounted by dataset name, not by its backing device, and the
-# nested pool cannot reuse an already-imported $SCRATCH_ZPOOL_NAME.  Rather
-# than exclude them, _zfs_try_mkfs_dev() now _notrun's with that reason, so
-# they self-skip.  This also stopped generic/648 (nested log recovery under
-# dm-error) from failing every run with "cannot create 'scratch': pool
-# already exists".
-
-# io_uring fsx soaks (buffered/DIO) on this kernel; still need ZFS-side
-# investigation. 091 (fsx READ BAD DATA at recordsize < 128K) and 263
-# (DIO + sub-block fsx) were in this family and are now fixed by the
-# Direct I/O pending-free read fix, so they are un-gated.
-generic/616
-generic/617
-
-# https://github.com/openzfs/zfs/issues/16014 — high-offset reflink: cp
-# --reflink=always on a sparse file gets SIGKILL'd, test output truncates
-# after "Reflink large empty file". Confirmed still failing 2026-04-25.
+# Runs past any sensible limit. cp --reflink=always on a large
+# sparse file never completes; killed at 900s on all five
+# (openzfs/zfs#16014).
 generic/303
 
-# Sub-recordsize reflink/copy_range issues:
-#   144 - reflinks blksz*4+37 bytes; ZFS rejects the sub-recordsize tail with
-#         EINVAL since block_cloning only clones whole recordsize records
-# (564 was a self-clone copy_range deadlock; fixed by the single combined
-#  writer rangelock in zfs_clone_range and un-gated.)
-generic/144
-
-# fsx -e 1 post-EOF-page pollution.  Previously dismissed here as an
-# fs-specific zeroing quirk ("not a ZFS correctness issue") -- that was
-# WRONG.  It is a real ZFS bug: an mmap store into the last partial page
-# past EOF was left in the page cache and, once the file was extended to
-# cover it (a write past EOF, a truncate-up, or a fallocate), surfaced on
-# read and was written back to disk (confirmed with zdb).  Fixed by zeroing
-# the old partial-page tail on extend (zfs_write + zfs_extend); un-gated.
-
-# ZFS doesn't implement cgroup-aware writeback accounting (same as most
-# non-btrfs/non-xfs filesystems). Tracked upstream as openzfs/zfs#13662
-# "Annotate writeback I/O to the correct cgroup" (open).
-generic/563
-
-# t_readdir_3 random-offset seek + getdents64 returns 0 (EOF) on ZFS. ZFS
-# readdir d_off values are ZAP hash cookies, not a dense monotonic space —
-# a random offset in [0, maxpos] often lands between hash buckets where no
-# entry exists. Test was written for the udf seekdir crash (a48fc69fe658)
-# and assumes random offsets always yield an entry; that assumption is
-# fs-specific and incompatible with hash-cookie directories like ZFS.
+# Topology dependent, kept because they fail on the majority.
+#   175, 551: pass on raidz1, fail on the other four. Sub-recordsize
+#     reflink and aio-dio-write-verify respectively.
+#   676: passes on raidz1, mirror and single-a12, fails on stripe3
+#     and single-a9. ZFS readdir cookies are ZAP hashes rather than
+#     a dense offset space, and the test assumes a random offset
+#     always lands on an entry.
+generic/175
+generic/551
 generic/676
-
-# Newly reachable with ZFS FIEMAP support (previously notrun for lack of
-# .fiemap). 009/092/094/679 asserted an "unwritten" extent type after
-# fallocate; ZFS represents preallocation as holes plus a space reservation
-# and never creates unwritten extents, so they are now skipped by the upstream
-# _require_unwritten_extents capability check and no longer need excluding.
-#   255, 301 - un-gated: both self-skip on the upstream capability checks
-#     ("filesystem does not create unwritten extents from fallocate" and
-#     "filesystem fully fragments random copy-on-write overwrites"), so
-#     like 009/092/094/679 they do not need excluding.
-# FIDEDUPERANGE (openzfs/zfs#18745):
-#   517 - dedupes a sub-recordsize whole file into the middle of another
-#         file; ZFS block cloning only clones whole records so this is
-#         EINVAL (same family as the 144 reflink note above)
-generic/517
