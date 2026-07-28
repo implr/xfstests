@@ -224,10 +224,10 @@ generic/676
 # fallocate; ZFS represents preallocation as holes plus a space reservation
 # and never creates unwritten extents, so they are now skipped by the upstream
 # _require_unwritten_extents capability check and no longer need excluding.
-#   255 - punch-hole layout differs on ZFS (not recordsize related) [under review]
-#   301 - CoW fragmentation bound assumes an allocator that merges  [under review]
-generic/255
-generic/301
+#   255, 301 - un-gated: both self-skip on the upstream capability checks
+#     ("filesystem does not create unwritten extents from fallocate" and
+#     "filesystem fully fragments random copy-on-write overwrites"), so
+#     like 009/092/094/679 they do not need excluding.
 # FIDEDUPERANGE (openzfs/zfs#18745):
 #   517 - dedupes a sub-recordsize whole file into the middle of another
 #         file; ZFS block cloning only clones whole records so this is
